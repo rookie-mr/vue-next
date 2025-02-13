@@ -1,57 +1,62 @@
 import {
-  NodeTransform,
-  NodeTypes,
+  type ArrayExpression,
+  type AttributeNode,
+  type CallExpression,
+  type DirectiveNode,
   ElementTypes,
-  TemplateLiteral,
-  createTemplateLiteral,
-  createInterpolation,
-  createCallExpression,
-  createConditionalExpression,
-  createSimpleExpression,
-  buildProps,
-  DirectiveNode,
-  PlainElementNode,
-  createCompilerError,
   ErrorCodes,
-  CallExpression,
-  createArrayExpression,
-  ExpressionNode,
-  JSChildNode,
-  ArrayExpression,
-  createAssignmentExpression,
-  TextNode,
-  hasDynamicKeyVBind,
+  type ExpressionNode,
+  type InterpolationNode,
+  type JSChildNode,
   MERGE_PROPS,
-  isStaticArgOf,
-  createSequenceExpression,
-  InterpolationNode,
-  isStaticExp,
-  AttributeNode,
+  type NodeTransform,
+  NodeTypes,
+  type PlainElementNode,
+  type PropsExpression,
+  type TemplateLiteral,
+  type TextNode,
+  type TransformContext,
   buildDirectiveArgs,
-  TransformContext,
-  PropsExpression
+  buildProps,
+  createArrayExpression,
+  createAssignmentExpression,
+  createCallExpression,
+  createCompilerError,
+  createCompoundExpression,
+  createConditionalExpression,
+  createInterpolation,
+  createSequenceExpression,
+  createSimpleExpression,
+  createTemplateLiteral,
+  findDir,
+  hasDynamicKeyVBind,
+  isStaticArgOf,
+  isStaticExp,
 } from '@vue/compiler-dom'
 import {
+  NO,
   escapeHtml,
   isBooleanAttr,
   isBuiltInDirective,
   isSSRSafeAttrName,
-  NO,
-  propsToAttrMap
+  propsToAttrMap,
 } from '@vue/shared'
-import { createSSRCompilerError, SSRErrorCodes } from '../errors'
+import { SSRErrorCodes, createSSRCompilerError } from '../errors'
 import {
-  SSR_RENDER_ATTR,
-  SSR_RENDER_CLASS,
-  SSR_RENDER_STYLE,
-  SSR_RENDER_DYNAMIC_ATTR,
-  SSR_RENDER_ATTRS,
-  SSR_INTERPOLATE,
+  SSR_GET_DIRECTIVE_PROPS,
   SSR_GET_DYNAMIC_MODEL_PROPS,
   SSR_INCLUDE_BOOLEAN_ATTR,
-  SSR_GET_DIRECTIVE_PROPS
+  SSR_INTERPOLATE,
+  SSR_RENDER_ATTR,
+  SSR_RENDER_ATTRS,
+  SSR_RENDER_CLASS,
+  SSR_RENDER_DYNAMIC_ATTR,
+  SSR_RENDER_STYLE,
 } from '../runtimeHelpers'
-import { SSRTransformContext, processChildren } from '../ssrCodegenTransform'
+import {
+  type SSRTransformContext,
+  processChildren,
+} from '../ssrCodegenTransform'
 
 // for directives with children overwrite (e.g. v-html & v-text), we need to
 // store the raw children so that they can be added in the 2nd pass.
@@ -81,7 +86,7 @@ export const ssrTransformElement: NodeTransform = (node, context) => {
     // so when they are present we need to bail out to full `renderAttrs`
     const hasDynamicVBind = hasDynamicKeyVBind(node)
     const hasCustomDir = node.props.some(
-      p => p.type === NodeTypes.DIRECTIVE && !isBuiltInDirective(p.name)
+      p => p.type === NodeTypes.DIRECTIVE && !isBuiltInDirective(p.name),
     )
     const needMergeProps = hasDynamicVBind || hasCustomDir
     if (needMergeProps) {
@@ -91,13 +96,13 @@ export const ssrTransformElement: NodeTransform = (node, context) => {
         node.props,
         false /* isComponent */,
         false /* isDynamicComponent */,
-        true /* ssr */
+        true /* ssr */,
       )
       if (props || directives.length) {
         const mergedProps = buildSSRProps(props, directives, context)
         const propsExp = createCallExpression(
           context.helper(SSR_RENDER_ATTRS),
-          [mergedProps]
+          [mergedProps],
         )
 
         if (node.tag === 'textarea') {
@@ -116,8 +121,8 @@ export const ssrTransformElement: NodeTransform = (node, context) => {
             propsExp.arguments = [
               createAssignmentExpression(
                 createSimpleExpression(tempId, false),
-                mergedProps
-              )
+                mergedProps,
+              ),
             ]
             rawChildrenMap.set(
               node,
@@ -127,11 +132,11 @@ export const ssrTransformElement: NodeTransform = (node, context) => {
                   createSimpleExpression(`${tempId}.value`, false),
                   createSimpleExpression(
                     existingText ? existingText.content : ``,
-                    true
+                    true,
                   ),
-                  false
-                )
-              ])
+                  false,
+                ),
+              ]),
             )
           }
         } else if (node.tag === 'input') {
@@ -152,12 +157,35 @@ export const ssrTransformElement: NodeTransform = (node, context) => {
                     context.helper(SSR_GET_DYNAMIC_MODEL_PROPS),
                     [
                       tempExp, // existing props
-                      vModel.exp! // model
-                    ]
-                  )
-                ])
-              ])
+                      vModel.exp!, // model
+                    ],
+                  ),
+                ]),
+              ]),
             ]
+          }
+        } else if (directives.length && !node.children.length) {
+          // v-text directive has higher priority than the merged props
+          const vText = findDir(node, 'text')
+          if (!vText) {
+            const tempId = `_temp${context.temps++}`
+            propsExp.arguments = [
+              createAssignmentExpression(
+                createSimpleExpression(tempId, false),
+                mergedProps,
+              ),
+            ]
+            rawChildrenMap.set(
+              node,
+              createConditionalExpression(
+                createSimpleExpression(`"textContent" in ${tempId}`, false),
+                createCallExpression(context.helper(SSR_INTERPOLATE), [
+                  createSimpleExpression(`${tempId}.textContent`, false),
+                ]),
+                createSimpleExpression(`${tempId}.innerHTML ?? ''`, false),
+                false,
+              ),
+            )
           }
         }
 
@@ -185,12 +213,15 @@ export const ssrTransformElement: NodeTransform = (node, context) => {
       // special cases with children override
       if (prop.type === NodeTypes.DIRECTIVE) {
         if (prop.name === 'html' && prop.exp) {
-          rawChildrenMap.set(node, prop.exp)
+          rawChildrenMap.set(
+            node,
+            createCompoundExpression([`(`, prop.exp, `) ?? ''`]),
+          )
         } else if (prop.name === 'text' && prop.exp) {
           node.children = [createInterpolation(prop.exp, prop.loc)]
         } else if (prop.name === 'slot') {
           context.onError(
-            createCompilerError(ErrorCodes.X_V_SLOT_MISPLACED, prop.loc)
+            createCompilerError(ErrorCodes.X_V_SLOT_MISPLACED, prop.loc),
           )
         } else if (isTextareaWithValue(node, prop) && prop.exp) {
           if (!needMergeProps) {
@@ -203,7 +234,7 @@ export const ssrTransformElement: NodeTransform = (node, context) => {
             const { props, ssrTagParts } = directiveTransform(
               prop,
               node,
-              context
+              context,
             )
             if (ssrTagParts) {
               openTag.push(...ssrTagParts)
@@ -221,9 +252,9 @@ export const ssrTransformElement: NodeTransform = (node, context) => {
                     ` class="`,
                     (dynamicClassBinding = createCallExpression(
                       context.helper(SSR_RENDER_CLASS),
-                      [value]
+                      [value],
                     )),
-                    `"`
+                    `"`,
                   )
                 } else if (attrName === 'style') {
                   if (dynamicStyleBinding) {
@@ -234,9 +265,9 @@ export const ssrTransformElement: NodeTransform = (node, context) => {
                       ` style="`,
                       (dynamicStyleBinding = createCallExpression(
                         context.helper(SSR_RENDER_STYLE),
-                        [value]
+                        [value],
                       )),
-                      `"`
+                      `"`,
                     )
                   }
                 } else {
@@ -249,26 +280,26 @@ export const ssrTransformElement: NodeTransform = (node, context) => {
                       createConditionalExpression(
                         createCallExpression(
                           context.helper(SSR_INCLUDE_BOOLEAN_ATTR),
-                          [value]
+                          [value],
                         ),
                         createSimpleExpression(' ' + attrName, true),
                         createSimpleExpression('', true),
-                        false /* no newline */
-                      )
+                        false /* no newline */,
+                      ),
                     )
                   } else if (isSSRSafeAttrName(attrName)) {
                     openTag.push(
                       createCallExpression(context.helper(SSR_RENDER_ATTR), [
                         key,
-                        value
-                      ])
+                        value,
+                      ]),
                     )
                   } else {
                     context.onError(
                       createSSRCompilerError(
                         SSRErrorCodes.X_SSR_UNSAFE_ATTR_NAME,
-                        key.loc
-                      )
+                        key.loc,
+                      ),
                     )
                   }
                 }
@@ -283,8 +314,8 @@ export const ssrTransformElement: NodeTransform = (node, context) => {
                 openTag.push(
                   createCallExpression(
                     context.helper(SSR_RENDER_DYNAMIC_ATTR),
-                    args
-                  )
+                    args,
+                  ),
                 )
               }
             }
@@ -292,19 +323,20 @@ export const ssrTransformElement: NodeTransform = (node, context) => {
         }
       } else {
         // special case: value on <textarea>
-        if (node.tag === 'textarea' && prop.name === 'value' && prop.value) {
+        const name = prop.name
+        if (node.tag === 'textarea' && name === 'value' && prop.value) {
           rawChildrenMap.set(node, escapeHtml(prop.value.content))
         } else if (!needMergeProps) {
-          if (prop.name === 'key' || prop.name === 'ref') {
+          if (name === 'key' || name === 'ref') {
             continue
           }
           // static prop
-          if (prop.name === 'class' && prop.value) {
+          if (name === 'class' && prop.value) {
             staticClassBinding = JSON.stringify(prop.value.content)
           }
           openTag.push(
             ` ${prop.name}` +
-              (prop.value ? `="${escapeHtml(prop.value.content)}"` : ``)
+              (prop.value ? `="${escapeHtml(prop.value.content)}"` : ``),
           )
         }
       }
@@ -327,7 +359,7 @@ export const ssrTransformElement: NodeTransform = (node, context) => {
 export function buildSSRProps(
   props: PropsExpression | undefined,
   directives: DirectiveNode[],
-  context: TransformContext
+  context: TransformContext,
 ): JSChildNode {
   let mergePropsArgs: JSChildNode[] = []
   if (props) {
@@ -343,8 +375,8 @@ export function buildSSRProps(
       mergePropsArgs.push(
         createCallExpression(context.helper(SSR_GET_DIRECTIVE_PROPS), [
           `_ctx`,
-          ...buildDirectiveArgs(dir, context).elements
-        ] as JSChildNode[])
+          ...buildDirectiveArgs(dir, context).elements,
+        ] as JSChildNode[]),
       )
     }
   }
@@ -369,7 +401,7 @@ function isTrueFalseValue(prop: DirectiveNode | AttributeNode) {
 
 function isTextareaWithValue(
   node: PlainElementNode,
-  prop: DirectiveNode
+  prop: DirectiveNode,
 ): boolean {
   return !!(
     node.tag === 'textarea' &&
@@ -389,7 +421,7 @@ function mergeCall(call: CallExpression, arg: string | JSChildNode) {
 
 function removeStaticBinding(
   tag: TemplateLiteral['elements'],
-  binding: string
+  binding: string,
 ) {
   const regExp = new RegExp(`^ ${binding}=".+"$`)
 
@@ -402,14 +434,14 @@ function removeStaticBinding(
 
 function findVModel(node: PlainElementNode): DirectiveNode | undefined {
   return node.props.find(
-    p => p.type === NodeTypes.DIRECTIVE && p.name === 'model' && p.exp
+    p => p.type === NodeTypes.DIRECTIVE && p.name === 'model' && p.exp,
   ) as DirectiveNode | undefined
 }
 
 export function ssrProcessElement(
   node: PlainElementNode,
-  context: SSRTransformContext
-) {
+  context: SSRTransformContext,
+): void {
   const isVoidTag = context.options.isVoidTag || NO
   const elementsToAdd = node.ssrCodegenNode!.elements
   for (let j = 0; j < elementsToAdd.length; j++) {
